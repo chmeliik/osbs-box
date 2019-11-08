@@ -1,0 +1,76 @@
+# Set up a namespace using a list of Templates, Secrets and ConfigMaps.
+#
+# Params:
+#   name: Name of namespace to be set up
+#
+#   anyuid: Allow containers to run as any user? Optional, default False.
+#
+#   templates []: Paths to template files
+#   param_file: Path to param file to use when applying templates
+#
+#   config_maps []:
+#     name: Name of configMap
+#     files []:
+#       src: File to include in the configMap
+#       dest: Destination filename (optional, default basename of $src)
+#
+#   secrets []:
+#     name: Name of secret
+#     files []:
+#       src: File to include in the secret
+#       dest: Destination filename (optional, default basename of $src)
+---
+- name: Create "{{ name }}" namespace
+  command: oc create namespace "{{ name }}"
+  register: create_namespace
+  failed_when: create_namespace.rc != 0
+               and "already exists" not in create_namespace.stderr
+  changed_when: create_namespace.rc == 0
+
+- name: Allow containers in "{{ name }}" namespace to run as any user
+  command:
+    oc --namespace "{{ name }}" adm policy add-scc-to-user anyuid
+       --serviceaccount default
+  changed_when: true
+  when: anyuid | default(False)
+
+- name: Create specified configMaps in "{{ name }}" namespace
+  shell:
+    set -o pipefail;
+    oc create configmap "{{ item.name }}"
+              {% for f in item.files %}
+              --from-file "{{ f.dest | default(f.src | basename) }}={{ f.src }}"
+              {% endfor %}
+              --dry-run
+              --output json |
+    oc --namespace "{{ name }}" replace --force -f -
+  changed_when: true
+  loop:
+    "{{ config_maps | default([]) }}"
+
+- name: Create specified secrets in "{{ name }}" namespace
+  shell:
+    set -o pipefail;
+    oc create secret generic "{{ item.name }}"
+              {% for f in item.files %}
+              --from-file "{{ f.dest | default(f.src | basename) }}={{ f.src }}"
+              {% endfor %}
+              --dry-run
+              --output json |
+    oc --namespace "{{ name }}" replace --force -f -
+  changed_when: true
+  loop:
+    "{{ secrets | default([]) }}"
+
+- name: Apply specified templates in "{{ name }}" namespace
+  shell:
+    set -o pipefail;
+    oc process -f "{{ item }}"
+               --param-file "{{ param_file }}"
+               --ignore-unknown-parameters |
+    oc --namespace "{{ name }}" apply -f -
+  register: apply_template
+  changed_when: >
+    "configured" in apply_template.stdout or "created" in apply_template.stdout
+  loop:
+    "{{ templates | default([]) }}"

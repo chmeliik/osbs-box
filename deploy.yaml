@@ -51,42 +51,22 @@
 - name: Run koji containers on openshift
   hosts: osbs_box_host
   gather_facts: false
-  vars:
-    # This is a constant, please do not override
-    koji_components:
-      - koji-volumes
-      - koji-base
-      - koji-client
-      - koji-builder
-      - koji-db
-      - koji-hub
   tags:
     - koji
     - openshift
 
   tasks:
-    - name: Create koji namespace in openshift
-      command: oc create namespace "{{ koji_namespace }}"
-      register: create_koji_namespace
-      failed_when: create_koji_namespace.rc != 0
-                   and "already exists" not in create_koji_namespace.stderr
-      changed_when: create_koji_namespace.rc == 0
-
-    - name: Create koji-certs secret in koji namespace
-      shell:
-        set -o pipefail;
-        oc create secret generic koji-certs
-            --from-file "{{ certificates_dir }}/osbs-box-ca.crt"
-            --from-file "{{ koji_certs_dir }}/koji-hub.crt"
-            --from-file "{{ koji_certs_dir }}/koji-hub.key"
-            --from-file "{{ koji_certs_dir }}/kojiweb.pem"
-            --from-file "{{ koji_certs_dir }}/kojibuilder.pem"
-            --from-file "{{ koji_certs_dir }}/kojiadmin.pem"
-            --from-file "{{ koji_certs_dir }}/kojiosbs.pem"
-            --dry-run
-            --output json |
-        oc --namespace "{{ koji_namespace }}" replace --force -f -
-      changed_when: true
+    - name: Copy koji openshift templates to openshift files dir
+      copy:
+        src: "openshift/templates/{{ item }}.yaml"
+        dest: "{{ openshift_files }}/{{ item }}.yaml"
+      loop:
+        - koji-volumes
+        - koji-base
+        - koji-client
+        - koji-builder
+        - koji-db
+        - koji-hub
 
     - name: Process koji config templates, output in openshift files dir
       template:
@@ -95,42 +75,6 @@
       loop:
         - koji-builder-osbs.conf
         - koji-hub-web.conf
-
-    - name: Create kojiweb and osbs-client configmaps in koji namespace
-      shell:
-        set -o pipefail;
-        oc create configmap "{{ item.name }}"
-            --from-file "{{ item.dest }}={{ openshift_files }}/{{ item.src }}"
-            --dry-run
-            --output json |
-        oc --namespace "{{ koji_namespace }}" replace --force -f -
-      changed_when: true
-      loop:
-        - name: koji-builder-osbs
-          src: koji-builder-osbs.conf
-          dest: osbs.conf
-
-        - name: koji-hub-web
-          src: koji-hub-web.conf
-          dest: web.conf
-
-    - name: Copy openshift templates for koji components to openshift files dir
-      copy:
-        src: "openshift/templates/{{ item }}.yaml"
-        dest: "{{ openshift_files }}/{{ item }}.yaml"
-      loop:
-        "{{ koji_components }}"
-
-    - name: Create openshift resources for all koji components
-      shell:
-        set -o pipefail;
-        oc process -f "{{ openshift_files }}/{{ item }}.yaml"
-                   --param-file "{{ openshift_files }}/osbs-box.env"
-                   --ignore-unknown-parameters |
-        oc --namespace "{{ koji_namespace }}" apply -f -
-      changed_when: true
-      loop:
-        "{{ koji_components }}"
 
     - name: Set up directories that will serve as backing storage for koji PVs
       file:
@@ -141,11 +85,38 @@
         - "{{ koji_files_dir }}"
         - "{{ koji_db_data_dir }}"
 
-    - name: Allow koji containers to run as any user
-      command:
-        oc --namespace "{{ koji_namespace }}" adm policy add-scc-to-user anyuid
-           --serviceaccount default
-      changed_when: true
+    - name: Set up koji namespace
+      include_tasks: tasks/setup-namespace.yaml
+      vars:
+        name: "{{ koji_namespace }}"
+        anyuid: true
+        templates:
+          - "{{ openshift_files }}/koji-volumes.yaml"
+          - "{{ openshift_files }}/koji-base.yaml"
+          - "{{ openshift_files }}/koji-client.yaml"
+          - "{{ openshift_files }}/koji-builder.yaml"
+          - "{{ openshift_files }}/koji-db.yaml"
+          - "{{ openshift_files }}/koji-hub.yaml"
+        param_file: "{{ openshift_files }}/osbs-box.env"
+        config_maps:
+          - name: koji-builder-osbs
+            files:
+              - src: "{{ openshift_files }}/koji-builder-osbs.conf"
+                dest: osbs.conf
+          - name: koji-hub-web
+            files:
+              - src: "{{ openshift_files }}/koji-hub-web.conf"
+                dest: web.conf
+        secrets:
+          - name: koji-certs
+            files:
+              - src: "{{ certificates_dir }}/osbs-box-ca.crt"
+              - src: "{{ koji_certs_dir }}/koji-hub.crt"
+              - src: "{{ koji_certs_dir }}/koji-hub.key"
+              - src: "{{ koji_certs_dir }}/kojiweb.pem"
+              - src: "{{ koji_certs_dir }}/kojibuilder.pem"
+              - src: "{{ koji_certs_dir }}/kojiadmin.pem"
+              - src: "{{ koji_certs_dir }}/kojiosbs.pem"
 
     - name: Build (and automatically deploy) koji components
       command: oc --namespace "{{ koji_namespace }}" start-build koji-base
@@ -160,23 +131,10 @@
     - openshift
 
   tasks:
-    - name: Create registry namespace in openshift
-      command: oc create namespace "{{ registry_namespace }}"
-      register: create_registry_namespace
-      failed_when: create_registry_namespace.rc != 0
-                   and "already exists" not in create_registry_namespace.stderr
-      changed_when: create_registry_namespace.rc == 0
-
-    - name: Create registry-cert secret in openshift
-      shell:
-        set -o pipefail;
-        oc create secret generic registry-cert
-            --from-file "{{ registry_certs_dir }}/osbs-registry.crt"
-            --from-file "{{ registry_certs_dir }}/osbs-registry.key"
-            --dry-run
-            --output json |
-        oc --namespace "{{ registry_namespace }}" replace --force -f -
-      changed_when: true
+    - name: Copy osbs-registry template to openshift files dir
+      copy:
+        src: openshift/templates/osbs-registry.yaml
+        dest: "{{ openshift_files }}/osbs-registry.yaml"
 
     - name: Set up directory for registry PV storage
       file:
@@ -184,72 +142,34 @@
         state: directory
         setype: container_file_t
 
-    - name: Allow registry container to run as any user
-      command:
-        oc --namespace "{{ registry_namespace }}" adm policy add-scc-to-user
-           anyuid --serviceaccount default
-      changed_when: true
-
-    - name: Copy osbs-registry template to openshift files dir
-      copy:
-        src: openshift/templates/osbs-registry.yaml
-        dest: "{{ openshift_files }}/osbs-registry.yaml"
-
-    - name: Deploy osbs-registry
-      shell:
-        set -o pipefail;
-        oc process -f "{{ openshift_files }}/osbs-registry.yaml"
-                   --param-file "{{ openshift_files }}/osbs-box.env"
-                   --ignore-unknown-parameters |
-        oc --namespace "{{ registry_namespace }}" apply -f -
-      changed_when: true
+    - name: Set up OSBS registry namespace
+      include_tasks: tasks/setup-namespace.yaml
+      vars:
+        name: "{{ registry_namespace }}"
+        anyuid: true
+        templates:
+          - "{{ openshift_files }}/osbs-registry.yaml"
+        param_file: "{{ openshift_files }}/osbs-box.env"
+        secrets:
+          - name: registry-cert
+            files:
+              - src: "{{ registry_certs_dir }}/osbs-registry.crt"
+              - src: "{{ registry_certs_dir }}/osbs-registry.key"
 
 
 - name: Set up OSBS orchestrator and worker namespaces
   hosts: osbs_box_host
   gather_facts: false
-  vars:
-    # This is a constant, please do not override
-    namespaces:
-      - "{{ orchestrator_namespace }}"
-      - "{{ worker_namespace }}"
   tags:
     - namespaces
     - openshift
 
   tasks:
-    - name: Create orchestrator and worker namespaces in openshift
-      command: oc create namespace "{{ item }}"
-      register: create_namespace
-      failed_when: create_namespace.rc != 0
-                   and "already exists" not in create_namespace.stderr
-      changed_when: create_namespace.rc == 0
-      loop:
-        "{{ namespaces }}"
-
-    - name: Create kojisecret in orchestrator and worker namespaces
-      shell:
-        set -o pipefail;
-        oc create secret generic kojisecret
-            --from-file "cert={{ koji_certs_dir }}/kojiosbs.pem"
-            --from-file "ca={{ certificates_dir }}/osbs-box-ca.crt"
-            --from-file "serverca={{ certificates_dir }}/osbs-box-ca.crt"
-            --dry-run
-            --output json |
-        oc --namespace "{{ item }}" replace --force -f -
-      changed_when: true
-      loop:
-        "{{ namespaces }}"
-
     - name: Query openshift for osbs-registry IP
       command: oc --namespace "{{ registry_namespace }}" get svc osbs-registry
                   --output 'jsonpath={ .spec.clusterIP }'
       register: registry_ip_query
       changed_when: false
-
-    - name: Set registry_ip fact (needed for orchestrator config templates)
-      set_fact:
-        registry_ip: "{{ registry_ip_query.stdout }}"
 
     - name: Process orchestrator config templates, output in openshift files dir
       template:
@@ -258,26 +178,45 @@
       loop:
         - reactor-config-map.yaml
         - client-config-secret.conf
+      vars:
+        registry_ip: "{{ registry_ip_query.stdout }}"
 
-    - name: Create reactor-config-map in orchestrator namespace
-      shell:
-        set -o pipefail;
-        oc create configmap reactor-config-map
-          --from-file "config.yaml={{ openshift_files }}/reactor-config-map.yaml"
-          --dry-run
-          --output json |
-        oc --namespace "{{ orchestrator_namespace }}" replace --force -f -
-      changed_when: true
+    - name: Set up orchestrator namespace
+      include_tasks: tasks/setup-namespace.yaml
+      vars:
+        name: "{{ orchestrator_namespace }}"
+        config_maps:
+          - name: reactor-config-map
+            files:
+              - src: "{{ openshift_files }}/reactor-config-map.yaml"
+                dest: config.yaml
+        secrets:
+          - name: client-config-secret
+            files:
+              - src: "{{ openshift_files }}/client-config-secret.conf"
+                dest: osbs.conf
+          - name: kojisecret
+            files:
+              - src: "{{ koji_certs_dir }}/kojiosbs.pem"
+                dest: cert
+              - src: "{{ certificates_dir }}/osbs-box-ca.crt"
+                dest: ca
+              - src: "{{ certificates_dir }}/osbs-box-ca.crt"
+                dest: serverca
 
-    - name: Create client-config-secret in orchestrator namespace
-      shell:
-        set -o pipefail;
-        oc create secret generic client-config-secret
-          --from-file "osbs.conf={{ openshift_files }}/client-config-secret.conf"
-          --dry-run
-          --output json |
-        oc --namespace "{{ orchestrator_namespace }}" replace --force -f -
-      changed_when: true
+    - name: Set up worker namespace
+      include_tasks: tasks/setup-namespace.yaml
+      vars:
+        name: "{{ worker_namespace }}"
+        secrets:
+          - name: kojisecret
+            files:
+              - src: "{{ koji_certs_dir }}/kojiosbs.pem"
+                dest: cert
+              - src: "{{ certificates_dir }}/osbs-box-ca.crt"
+                dest: ca
+              - src: "{{ certificates_dir }}/osbs-box-ca.crt"
+                dest: serverca
 
     - name: Add necessary roles to builder serviceaccounts
       command: oc --namespace "{{ item.0 }}" adm policy
@@ -286,6 +225,9 @@
       loop:
         "{{ namespaces | product(roles) | list }}"
       vars:
+        namespaces:
+          - "{{ orchestrator_namespace }}"
+          - "{{ worker_namespace }}"
         roles:
           - "edit"
           - "system:build-strategy-custom"
