@@ -156,6 +156,14 @@
               - src: "{{ registry_certs_dir }}/osbs-registry.crt"
               - src: "{{ registry_certs_dir }}/osbs-registry.key"
 
+    - name: Deploy osbs-registry
+      command: oc --namespace "{{ registry_namespace }}"
+                  rollout latest osbs-registry
+      register: deploy_registry
+      changed_when: deploy_registry.rc == 0
+      failed_when: deploy_registry.rc != 0
+                   and "is already in progress" not in deploy_registry.stderr
+
 
 - name: Set up OSBS orchestrator and worker namespaces
   hosts: osbs_box_host
