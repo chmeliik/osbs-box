@@ -38,14 +38,6 @@ check_result "A tag with the name 'dest' already exists" \
 check_result "A build target with the name 'candidate' already exists" \
              koji add-target candidate build dest
 
-check_result 'Package osbs-buildroot-docker already exists in tag dest' \
-             koji add-pkg dest osbs-buildroot-docker --owner kojiadmin
-check_result 'Package docker-hello-world already exists in tag dest' \
-             koji add-pkg dest docker-hello-world --owner kojiadmin
-
-check_result 'Package docker-hello-world-source already exists in tag dest' \
-             koji add-pkg dest docker-hello-world-source --owner kojiadmin
-
 check_result 'btype already exists' \
              koji call addBType operator-manifests
 
@@ -53,4 +45,14 @@ check_result "user already exists: kojiosbs" \
              koji add-user kojiosbs
 
 check_result 'User already has access to content generator atomic-reactor' \
-             koji grant_cg_access kojiosbs atomic-reactor
+             koji grant-cg-access kojiosbs atomic-reactor
+check_result 'User already has access to content generator atomic-reactor' \
+             koji grant-cg-access kojiadmin atomic-reactor
+
+for package in osbs-buildroot-docker \
+               docker-hello-world \
+               docker-hello-world-source
+do
+    check_result "Package $package already exists in tag dest" \
+                 koji add-pkg dest "$package" --owner kojiadmin
+done
