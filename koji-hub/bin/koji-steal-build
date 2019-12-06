@@ -9,13 +9,25 @@ import hashlib
 
 DEFAULT_DOWNLOAD_BLOCK_SIZE = 10 * 1024 * 1024  # 10Mb
 
+KOJIHUB = 'https://localhost/kojihub'
+KOJIADMIN = 'kojiadmin'
+
+CERT = f'/etc/pki/koji/{KOJIADMIN}.pem'
+SERVERCA = '/etc/pki/koji/osbs-box-ca.crt'
+
+DEST_TAG = 'dest'
+
 
 class BuildStealer(object):
 
     def __init__(self, nvr, kojihub, kojiroot):
         self.nvr = nvr
+
         self.pathinfo = koji.PathInfo(topdir=kojiroot)
-        self.session = koji.ClientSession(kojihub)
+        self.remote_session = koji.ClientSession(kojihub)
+
+        self.local_session = koji.ClientSession(KOJIHUB)
+        self.local_session.ssl_login(cert=CERT, serverca=SERVERCA)
 
         self.output_dir = os.path.join('/mnt/koji/work/build-stealer', nvr)
 
@@ -27,10 +39,12 @@ class BuildStealer(object):
         self.get_build_info()
         self.get_build_metadata()
         self.download_build_files()
+        self.add_build_owner()
+        self.add_build_package()
         self.import_build()
 
     def get_build_info(self):
-        self.build_info = self.session.getBuild(self.nvr, strict=True)
+        self.build_info = self.remote_session.getBuild(self.nvr, strict=True)
 
     def get_build_metadata(self):
         self.build_metadata_url = os.path.join(self.pathinfo.build(self.build_info),
@@ -59,6 +73,16 @@ class BuildStealer(object):
         url = os.path.join(url_base, output['filename'])
 
         return (url, dest_path)
+
+    def add_build_owner(self):
+        owner_name = self.build_info['owner_name']
+        if self.local_session.getUser(owner_name) is None:
+            self.local_session.createUser(owner_name)
+
+    def add_build_package(self):
+        owner_name = self.build_info['owner_name']
+        package_name = self.build_info['package_name']
+        self.local_session.packageListAdd(DEST_TAG, package_name, owner=KOJIADMIN)
 
     def import_build(self):
         metadata_filename = 'metadata-{}.json'.format(self.nvr)
