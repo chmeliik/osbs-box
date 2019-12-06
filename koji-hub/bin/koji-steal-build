@@ -7,6 +7,10 @@ import subprocess
 import hashlib
 
 
+BLUE = '\033[34m'
+BOLD = '\033[1m'
+RESET = '\033[0m'
+
 DEFAULT_DOWNLOAD_BLOCK_SIZE = 10 * 1024 * 1024  # 10Mb
 
 KOJIHUB = 'https://localhost/kojihub'
@@ -16,6 +20,15 @@ CERT = f'/etc/pki/koji/{KOJIADMIN}.pem'
 SERVERCA = '/etc/pki/koji/osbs-box-ca.crt'
 
 DEST_TAG = 'dest'
+TARGET = 'candidate'
+
+
+def info(msg):
+    print(f'{BLUE}INFO:{RESET} {msg}')
+
+
+def bold(s):
+    return f'{BOLD}{s}{RESET}'
 
 
 class BuildStealer(object):
@@ -42,6 +55,7 @@ class BuildStealer(object):
         self.add_build_owner()
         self.add_build_package()
         self.import_build()
+        self.show_info()
 
     def get_build_info(self):
         self.build_info = self.remote_session.getBuild(self.nvr, strict=True)
@@ -57,9 +71,11 @@ class BuildStealer(object):
         if not os.path.exists(self.output_dir):
             os.makedirs(self.output_dir)
 
+        info(f'Downloading files for build {bold(self.nvr)}')
+
         for output in self.build_metadata['output']:
             url, dest = self._resolve_file_download(output)
-            print('Downloading {}'.format(output['filename']))
+            print(f'Downloading {output["filename"]}')
             self._download_file(url, dest, output['checksum'])
 
     def _resolve_file_download(self, output):
@@ -90,7 +106,8 @@ class BuildStealer(object):
         self._download_file(self.build_metadata_url, metadata_path)
 
         # TODO: Create a new koji session with local defaults instead of calling koji process.
-        print('Importing build {}'.format(metadata_filename))
+        info(f'Importing build {bold(self.nvr)} '
+             f'from metadata: {bold(metadata_filename)}')
         subprocess.call(['koji', 'import-cg', '--link', metadata_path, self.output_dir])
 
         # TODO: For some reason the logs don't appear in final build.
@@ -109,6 +126,20 @@ class BuildStealer(object):
             raise ValueError(
                 'Computed md5 checksum, {}, does not match expected checksum, {}'
                 .format(checksum.hexdigest(), expected_checksum))
+
+    def show_info(self):
+        build_source = self.build_info['source']
+        package_name = self.build_info['package_name']
+
+        info(f'Run container-build:\n'
+             f'koji container-build {TARGET} \\\n'
+             f'     {build_source} \\\n'
+             f'     --git-branch <idk>')
+
+        info(f'Run source-container-build:\n'
+             f'koji add-pkg {DEST_TAG} {package_name}-source --owner {KOJIADMIN}\n'
+             f'koji source-container-build {TARGET} \\\n'
+             f'     --koji-build-nvr={self.nvr}')
 
 
 def parse_args():
